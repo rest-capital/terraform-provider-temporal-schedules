@@ -1,0 +1,36 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  TEMPORAL_CLI_VERSION: '1.6.1'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Install Temporal CLI
+        run: |
+          curl -fsSL "https://temporal.download/cli/archive/v${TEMPORAL_CLI_VERSION}?platform=linux&arch=amd64" -o temporal.tar.gz
+          tar -xzf temporal.tar.gz
+          sudo mv temporal /usr/local/bin/
+          temporal --version
+
+      - name: Run tests
+        env:
+          TF_ACC: "1"
+        run: go test ./... -v -count=1 -timeout 10m

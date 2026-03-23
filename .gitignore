@@ -1,0 +1,4 @@
+terraform-provider-temporal-schedules
+dist/
+.terraform/
+*.tfstate*

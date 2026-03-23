@@ -1,0 +1,33 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: standard
+  enable:
+    - misspell
+    - unconvert
+    - unparam
+    - gosec
+    - errorlint
+    - testifylint
+
+  settings:
+    gosec:
+      excludes:
+        - G104
+        - G704
+
+formatters:
+  enable:
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/rest-capital/terraform-provider-temporal-schedules
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
