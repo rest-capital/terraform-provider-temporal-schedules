@@ -7,7 +7,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 )
 
-var testAccProtoV6ProviderFactories = map[string]func() (tfprotov6.ProviderServer, error){ //nolint:unused // used by acceptance tests in Phase 2
+var testAccProtoV6ProviderFactories = map[string]func() (tfprotov6.ProviderServer, error){
 	"temporalschedules": providerserver.NewProtocol6WithError(New("test")()),
 }
 

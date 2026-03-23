@@ -36,7 +36,9 @@ func (p *temporalSchedulesProvider) Configure(_ context.Context, _ provider.Conf
 }
 
 func (p *temporalSchedulesProvider) Resources(_ context.Context) []func() resource.Resource {
-	return nil
+	return []func() resource.Resource{
+		NewScheduleResource,
+	}
 }
 
 func (p *temporalSchedulesProvider) DataSources(_ context.Context) []func() datasource.DataSource {
