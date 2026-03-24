@@ -38,7 +38,6 @@ resource "temporalschedules_schedule" "daily_report" {
   action {
     workflow_type = "ReportWorkflow"
     task_queue    = "report-queue"
-    workflow_id   = "daily-report-run"
     input_payload = jsonencode({ format = "pdf" })
   }
 
@@ -90,7 +89,7 @@ resource "temporalschedules_schedule" "daily_report" {
 |---|---|---|---|
 | `workflow_type` | String | Yes | Workflow type name to execute. |
 | `task_queue` | String | Yes | Task queue to dispatch the workflow to. |
-| `workflow_id` | String | No | Workflow execution ID. Defaults to a server-generated ID. |
+| `workflow_id` | String | No | Workflow execution ID prefix. Temporal appends a timestamp suffix to this value. Defaults to the schedule name. Maximum length: 979 characters. |
 | `input_payload` | String | No | JSON-encoded workflow input. |
 
 ### `spec` Block (Required)
@@ -129,6 +128,19 @@ Duration attributes (`catchup_window`, `jitter`, `interval.every`, `interval.off
 
 - Go duration strings: `1h`, `30m`, `15s`, `1h30m45s`
 - Day shorthand: `1d`, `7d`, `365d`
+
+## Behavior Notes
+
+### Retry on Authentication Errors
+
+All Temporal API calls (Create, Read, Update, Delete) automatically retry on `Unauthenticated` and `PermissionDenied` gRPC errors with backoff for up to 2 minutes. This handles API key eventual consistency when using Temporal Cloud.
+
+### Externally Deleted Schedules
+
+If a schedule is deleted outside of Terraform (e.g. via the Temporal UI or CLI):
+
+- **Read** removes the schedule from Terraform state, allowing Terraform to recreate it on the next `apply`.
+- **Delete** succeeds silently instead of returning an error.
 
 ## Import
 
