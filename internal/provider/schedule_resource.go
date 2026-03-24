@@ -143,7 +143,11 @@ func (r *scheduleResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 					},
 					"workflow_id": schema.StringAttribute{
 						Optional:    true,
-						Description: "Workflow execution ID. Defaults to a generated ID.",
+						Computed:    true,
+						Description: "Workflow execution ID prefix. Temporal appends a timestamp suffix to this value. Defaults to the schedule name.",
+						Validators: []validator.String{
+							stringvalidator.LengthAtMost(979),
+						},
 					},
 					"input_payload": schema.StringAttribute{
 						Optional:    true,
@@ -226,7 +230,7 @@ func (r *scheduleResource) Create(ctx context.Context, req resource.CreateReques
 		return
 	}
 
-	action, diags := buildWorkflowAction(plan.Action)
+	action, diags := buildWorkflowAction(plan.Action, plan.Name.ValueString())
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -327,7 +331,7 @@ func (r *scheduleResource) Update(ctx context.Context, req resource.UpdateReques
 		return
 	}
 
-	action, diags := buildWorkflowAction(plan.Action)
+	action, diags := buildWorkflowAction(plan.Action, plan.Name.ValueString())
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -506,7 +510,7 @@ func buildScheduleSpec(spec *specModel) (client.ScheduleSpec, diag.Diagnostics) 
 	return result, diags
 }
 
-func buildWorkflowAction(action *actionModel) (*client.ScheduleWorkflowAction, diag.Diagnostics) {
+func buildWorkflowAction(action *actionModel, scheduleName string) (*client.ScheduleWorkflowAction, diag.Diagnostics) {
 	var diags diag.Diagnostics
 	if action == nil {
 		diags.AddError("Missing action block", "An action block is required.")
@@ -520,6 +524,9 @@ func buildWorkflowAction(action *actionModel) (*client.ScheduleWorkflowAction, d
 
 	if !action.WorkflowID.IsNull() && !action.WorkflowID.IsUnknown() {
 		wfAction.ID = action.WorkflowID.ValueString()
+	} else {
+		wfAction.ID = scheduleName
+		action.WorkflowID = types.StringValue(scheduleName)
 	}
 
 	if !action.InputPayload.IsNull() && !action.InputPayload.IsUnknown() {
@@ -541,7 +548,7 @@ func readScheduleIntoState(state *scheduleResourceModel, desc *client.ScheduleDe
 		}
 		state.Action.WorkflowType = types.StringValue(wfAction.Workflow.(string))
 		state.Action.TaskQueue = types.StringValue(wfAction.TaskQueue)
-		if !state.Action.WorkflowID.IsNull() && wfAction.ID != "" {
+		if wfAction.ID != "" {
 			state.Action.WorkflowID = types.StringValue(wfAction.ID)
 		}
 	}
