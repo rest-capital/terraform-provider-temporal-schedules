@@ -17,6 +17,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/client"
 )
@@ -255,7 +256,13 @@ func (r *scheduleResource) Create(ctx context.Context, req resource.CreateReques
 		}
 	}
 
-	_, err = tc.ScheduleClient().Create(ctx, opts)
+	err = retry.RetryContext(ctx, 2*time.Minute, func() *retry.RetryError {
+		_, createErr := tc.ScheduleClient().Create(ctx, opts)
+		if createErr != nil {
+			return retryableOrNot(createErr)
+		}
+		return nil
+	})
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to create schedule", err.Error())
 		return
@@ -283,7 +290,15 @@ func (r *scheduleResource) Read(ctx context.Context, req resource.ReadRequest, r
 	}
 
 	handle := tc.ScheduleClient().GetHandle(ctx, state.Name.ValueString())
-	desc, err := handle.Describe(ctx)
+	var desc *client.ScheduleDescription
+	err = retry.RetryContext(ctx, 2*time.Minute, func() *retry.RetryError {
+		var descErr error
+		desc, descErr = handle.Describe(ctx)
+		if descErr != nil {
+			return retryableOrNot(descErr)
+		}
+		return nil
+	})
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to describe schedule", err.Error())
 		return
@@ -330,22 +345,28 @@ func (r *scheduleResource) Update(ctx context.Context, req resource.UpdateReques
 	}
 
 	handle := tc.ScheduleClient().GetHandle(ctx, plan.Name.ValueString())
-	err = handle.Update(ctx, client.ScheduleUpdateOptions{
-		DoUpdate: func(_ client.ScheduleUpdateInput) (*client.ScheduleUpdate, error) {
-			return &client.ScheduleUpdate{
-				Schedule: &client.Schedule{
-					Action: action,
-					Spec:   &scheduleSpec,
-					Policy: &client.SchedulePolicies{
-						Overlap:       overlapPolicy,
-						CatchupWindow: catchupWindow,
+	err = retry.RetryContext(ctx, 2*time.Minute, func() *retry.RetryError {
+		updateErr := handle.Update(ctx, client.ScheduleUpdateOptions{
+			DoUpdate: func(_ client.ScheduleUpdateInput) (*client.ScheduleUpdate, error) {
+				return &client.ScheduleUpdate{
+					Schedule: &client.Schedule{
+						Action: action,
+						Spec:   &scheduleSpec,
+						Policy: &client.SchedulePolicies{
+							Overlap:       overlapPolicy,
+							CatchupWindow: catchupWindow,
+						},
+						State: &client.ScheduleState{
+							Paused: plan.IsPaused.ValueBool(),
+						},
 					},
-					State: &client.ScheduleState{
-						Paused: plan.IsPaused.ValueBool(),
-					},
-				},
-			}, nil
-		},
+				}, nil
+			},
+		})
+		if updateErr != nil {
+			return retryableOrNot(updateErr)
+		}
+		return nil
 	})
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to update schedule", err.Error())
@@ -369,7 +390,13 @@ func (r *scheduleResource) Delete(ctx context.Context, req resource.DeleteReques
 	}
 
 	handle := tc.ScheduleClient().GetHandle(ctx, state.Name.ValueString())
-	err = handle.Delete(ctx)
+	err = retry.RetryContext(ctx, 2*time.Minute, func() *retry.RetryError {
+		deleteErr := handle.Delete(ctx)
+		if deleteErr != nil {
+			return retryableOrNot(deleteErr)
+		}
+		return nil
+	})
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to delete schedule", err.Error())
 		return
