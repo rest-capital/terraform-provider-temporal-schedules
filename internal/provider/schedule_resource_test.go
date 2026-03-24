@@ -7,8 +7,47 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/testsuite"
 )
+
+func TestIsNotFoundError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "nil error",
+			err:  nil,
+			want: false,
+		},
+		{
+			name: "serviceerror.NotFound",
+			err:  serviceerror.NewNotFound("schedule not found"),
+			want: true,
+		},
+		{
+			name: "wrapped serviceerror.NotFound",
+			err:  fmt.Errorf("outer: %w", serviceerror.NewNotFound("schedule not found")),
+			want: true,
+		},
+		{
+			name: "other error",
+			err:  fmt.Errorf("some random error"),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isNotFoundError(tt.err)
+			if got != tt.want {
+				t.Errorf("isNotFoundError() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
 
 func startDevServer(t *testing.T) *testsuite.DevServer {
 	t.Helper()
@@ -169,6 +208,71 @@ func TestAccSchedule_Import(t *testing.T) {
 					}
 					return nil
 				},
+			},
+		},
+	})
+}
+
+func TestAccSchedule_RecreateAfterExternalDeletion(t *testing.T) {
+	server := startDevServer(t)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccScheduleConfig_basicCron(server.FrontendHostPort()),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("temporalschedules_schedule.test", "name", "test-cron-schedule"),
+				),
+			},
+			{
+				// Delete the schedule externally via the Temporal SDK
+				PreConfig: func() {
+					tc, err := getTemporalClient(context.Background(), server.FrontendHostPort(), "default", "")
+					if err != nil {
+						t.Fatalf("creating Temporal client: %v", err)
+					}
+					handle := tc.ScheduleClient().GetHandle(context.Background(), "test-cron-schedule")
+					if err := handle.Delete(context.Background()); err != nil {
+						t.Fatalf("deleting schedule externally: %v", err)
+					}
+				},
+				// Same config — Terraform should detect it's gone and recreate it
+				Config: testAccScheduleConfig_basicCron(server.FrontendHostPort()),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("temporalschedules_schedule.test", "name", "test-cron-schedule"),
+				),
+			},
+		},
+	})
+}
+
+func TestAccSchedule_DestroyAfterExternalDeletion(t *testing.T) {
+	server := startDevServer(t)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccScheduleConfig_basicCron(server.FrontendHostPort()),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("temporalschedules_schedule.test", "name", "test-cron-schedule"),
+				),
+			},
+			{
+				// Delete the schedule externally, then destroy — should not error
+				PreConfig: func() {
+					tc, err := getTemporalClient(context.Background(), server.FrontendHostPort(), "default", "")
+					if err != nil {
+						t.Fatalf("creating Temporal client: %v", err)
+					}
+					handle := tc.ScheduleClient().GetHandle(context.Background(), "test-cron-schedule")
+					if err := handle.Delete(context.Background()); err != nil {
+						t.Fatalf("deleting schedule externally: %v", err)
+					}
+				},
+				Config:  testAccScheduleConfig_basicCron(server.FrontendHostPort()),
+				Destroy: true,
 			},
 		},
 	})

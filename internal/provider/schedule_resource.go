@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	enumspb "go.temporal.io/api/enums/v1"
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 )
 
@@ -26,6 +28,12 @@ var (
 	_ resource.Resource                = &scheduleResource{}
 	_ resource.ResourceWithImportState = &scheduleResource{}
 )
+
+// isNotFoundError returns true if the error is a Temporal NotFound service error.
+func isNotFoundError(err error) bool {
+	var notFound *serviceerror.NotFound
+	return errors.As(err, &notFound)
+}
 
 type scheduleResource struct{}
 
@@ -304,6 +312,10 @@ func (r *scheduleResource) Read(ctx context.Context, req resource.ReadRequest, r
 		return nil
 	})
 	if err != nil {
+		if isNotFoundError(err) {
+			resp.State.RemoveResource(ctx)
+			return
+		}
 		resp.Diagnostics.AddError("Failed to describe schedule", err.Error())
 		return
 	}
@@ -402,6 +414,9 @@ func (r *scheduleResource) Delete(ctx context.Context, req resource.DeleteReques
 		return nil
 	})
 	if err != nil {
+		if isNotFoundError(err) {
+			return
+		}
 		resp.Diagnostics.AddError("Failed to delete schedule", err.Error())
 		return
 	}
