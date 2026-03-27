@@ -18,4 +18,7 @@ lint:
 fmt:
 	gofmt -s -w -e .
 
-.PHONY: build install test testacc lint fmt
+generate:
+	go generate ./...
+
+.PHONY: build install test testacc lint fmt generate

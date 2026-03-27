@@ -1,0 +1,45 @@
+---
+page_title: "Provider: Temporal Schedules"
+subcategory: ""
+description: |-
+  Terraform provider for managing Temporal Schedules as infrastructure-as-code.
+---
+
+# Temporal Schedules Provider
+
+The Temporal Schedules provider manages [Temporal](https://temporal.io) Schedules as infrastructure-as-code.
+
+Connection details (`address`, `namespace`, `api_key`) are configured **per-resource**, not at the provider level. This allows a single Terraform configuration to manage schedules across multiple Temporal clusters and namespaces.
+
+## Example Usage
+
+```terraform
+terraform {
+  required_providers {
+    temporalschedules = {
+      source = "rest-capital/temporal-schedules"
+    }
+  }
+}
+
+provider "temporalschedules" {}
+
+resource "temporalschedules_schedule" "daily_report" {
+  namespace = "default"
+  address   = "temporal.example.com:7233"
+  api_key   = var.temporal_api_key
+  name      = "daily-report"
+
+  action {
+    workflow_type = "ReportWorkflow"
+    task_queue    = "report-queue"
+  }
+
+  spec {
+    cron_expressions = ["0 9 * * *"]
+    timezone         = "America/New_York"
+  }
+}
+```
+
+{{ .SchemaMarkdown | trimspace }}

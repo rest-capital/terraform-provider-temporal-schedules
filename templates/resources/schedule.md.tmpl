@@ -1,0 +1,116 @@
+---
+page_title: "{{.Name}} {{.Type}} - {{.ProviderName}}"
+subcategory: ""
+description: |-
+  Manages a Temporal Schedule.
+---
+
+# {{.Name}} ({{.Type}})
+
+Manages a [Temporal Schedule](https://docs.temporal.io/workflows#schedule). Schedules trigger workflow executions on a defined cadence using cron expressions, calendar specs, or fixed intervals.
+
+## Example Usage
+
+### Cron-based schedule
+
+```terraform
+resource "temporalschedules_schedule" "daily_report" {
+  namespace = "default"
+  address   = "temporal.example.com:7233"
+  api_key   = var.temporal_api_key
+  name      = "daily-report"
+
+  action {
+    workflow_type = "ReportWorkflow"
+    task_queue    = "report-queue"
+    input_payload = jsonencode({ format = "pdf" })
+  }
+
+  spec {
+    cron_expressions = ["0 9 * * *"]
+    timezone         = "America/New_York"
+  }
+}
+```
+
+### Calendar-based schedule
+
+```terraform
+resource "temporalschedules_schedule" "weekday_job" {
+  namespace = "default"
+  address   = "temporal.example.com:7233"
+  name      = "weekday-job"
+
+  action {
+    workflow_type = "ProcessWorkflow"
+    task_queue    = "processing-queue"
+  }
+
+  spec {
+    timezone = "America/New_York"
+
+    calendar {
+      hour        = "9"
+      minute      = "0"
+      day_of_week = "1-5"
+      comment     = "Weekday mornings"
+    }
+  }
+}
+```
+
+### Interval-based schedule
+
+```terraform
+resource "temporalschedules_schedule" "health_check" {
+  namespace = "default"
+  address   = "temporal.example.com:7233"
+  name      = "health-check"
+
+  action {
+    workflow_type = "HealthCheckWorkflow"
+    task_queue    = "monitoring-queue"
+  }
+
+  spec {
+    interval {
+      every  = "4h"
+      offset = "5m"
+    }
+
+    jitter = "30s"
+  }
+}
+```
+
+{{ .SchemaMarkdown | trimspace }}
+
+## Duration Format
+
+Duration attributes (`catchup_window`, `jitter`, `interval.every`, `interval.offset`) accept:
+
+- Go duration strings: `1h`, `30m`, `15s`, `1h30m45s`
+- Day shorthand: `1d`, `7d`, `365d`
+
+## Behavior Notes
+
+### Retry on Authentication Errors
+
+All Temporal API calls (Create, Read, Update, Delete) automatically retry on `Unauthenticated` and `PermissionDenied` gRPC errors with backoff for up to 2 minutes. This handles API key eventual consistency when using Temporal Cloud.
+
+### Externally Deleted Schedules
+
+If a schedule is deleted outside of Terraform (e.g. via the Temporal UI or CLI):
+
+- **Read** removes the schedule from Terraform state, allowing Terraform to recreate it on the next `apply`.
+- **Delete** succeeds silently instead of returning an error.
+
+## Import
+
+Import existing schedules using the format `namespace/schedule-name`:
+
+```shell
+terraform import temporalschedules_schedule.example default/my-schedule
+```
+
+The `address` (and optionally `api_key`) must be set in the resource configuration before importing, as they cannot be read from the Temporal server.

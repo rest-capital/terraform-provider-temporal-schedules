@@ -10,6 +10,8 @@ import (
 	"github.com/rest-capital/terraform-provider-temporal-schedules/internal/provider"
 )
 
+//go:generate go run github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs generate -provider-name temporalschedules
+
 var version = "dev"
 
 func main() {
