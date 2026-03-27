@@ -9,19 +9,11 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-
-      - uses: goreleaser/goreleaser-action@v7
-        with:
-          args: release --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  terraform-provider-release:
+    name: 'Terraform Provider Release'
+    uses: hashicorp/ghaction-terraform-provider-release/.github/workflows/community.yml@v5
+    secrets:
+      gpg-private-key: '${{ secrets.GPG_PRIVATE_KEY }}'
+      gpg-private-key-passphrase: '${{ secrets.GPG_PRIVATE_KEY_PASSPHRASE }}'
+    with:
+      setup-go-version-file: 'go.mod'
