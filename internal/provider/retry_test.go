@@ -77,13 +77,14 @@ func TestIsRetryableAuthError(t *testing.T) {
 }
 
 func TestRetryableOrNot(t *testing.T) {
+	ctx := context.Background()
+
 	t.Run("auth error is retryable", func(t *testing.T) {
 		err := status.Error(codes.Unauthenticated, "not yet propagated")
-		result := retryableOrNot(err)
+		result := retryableOrNot(ctx, err)
 		if result == nil {
 			t.Fatal("expected non-nil RetryError")
 		}
-		// RetryableError wraps with Retryable=true
 		if result.Err == nil {
 			t.Fatal("expected wrapped error")
 		}
@@ -91,7 +92,7 @@ func TestRetryableOrNot(t *testing.T) {
 
 	t.Run("non-auth error is non-retryable", func(t *testing.T) {
 		err := status.Error(codes.NotFound, "not found")
-		result := retryableOrNot(err)
+		result := retryableOrNot(ctx, err)
 		if result == nil {
 			t.Fatal("expected non-nil RetryError")
 		}
@@ -99,12 +100,13 @@ func TestRetryableOrNot(t *testing.T) {
 }
 
 func TestRetryContext_AuthErrorResolves(t *testing.T) {
+	ctx := context.Background()
 	var callCount atomic.Int32
 
-	err := retry.RetryContext(context.Background(), 30*time.Second, func() *retry.RetryError {
+	err := retry.RetryContext(ctx, 30*time.Second, func() *retry.RetryError {
 		n := callCount.Add(1)
 		if n <= 3 {
-			return retryableOrNot(status.Error(codes.Unauthenticated, "not yet propagated"))
+			return retryableOrNot(ctx, status.Error(codes.Unauthenticated, "not yet propagated"))
 		}
 		return nil
 	})
@@ -118,11 +120,12 @@ func TestRetryContext_AuthErrorResolves(t *testing.T) {
 }
 
 func TestRetryContext_NonAuthErrorFailsImmediately(t *testing.T) {
+	ctx := context.Background()
 	var callCount atomic.Int32
 
-	err := retry.RetryContext(context.Background(), 30*time.Second, func() *retry.RetryError {
+	err := retry.RetryContext(ctx, 30*time.Second, func() *retry.RetryError {
 		callCount.Add(1)
-		return retryableOrNot(status.Error(codes.NotFound, "schedule not found"))
+		return retryableOrNot(ctx, status.Error(codes.NotFound, "schedule not found"))
 	})
 
 	if err == nil {
@@ -133,12 +136,156 @@ func TestRetryContext_NonAuthErrorFailsImmediately(t *testing.T) {
 	}
 }
 
+func TestIsRetryableConnectionError(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "nil error",
+			err:  nil,
+			want: false,
+		},
+		{
+			name: "canceled - client connection closing",
+			err:  status.Error(codes.Canceled, "grpc: the client connection is closing"),
+			want: true,
+		},
+		{
+			name: "unavailable",
+			err:  status.Error(codes.Unavailable, "transport is closing"),
+			want: true,
+		},
+		{
+			name: "not found is not connection error",
+			err:  status.Error(codes.NotFound, "schedule not found"),
+			want: false,
+		},
+		{
+			name: "unauthenticated is not connection error",
+			err:  status.Error(codes.Unauthenticated, "invalid API key"),
+			want: false,
+		},
+		{
+			name: "non-gRPC error",
+			err:  fmt.Errorf("some random error"),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isRetryableConnectionError(ctx, tt.err)
+			if got != tt.want {
+				t.Errorf("isRetryableConnectionError() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsRetryableConnectionError_CanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// codes.Canceled with a cancelled context should NOT be retryable —
+	// the cancellation is intentional (user abort, Terraform timeout).
+	err := status.Error(codes.Canceled, "grpc: the client connection is closing")
+	if isRetryableConnectionError(ctx, err) {
+		t.Error("expected codes.Canceled to be non-retryable when context is done")
+	}
+
+	// codes.Unavailable should still be retryable even with cancelled context,
+	// though in practice the retry loop will exit due to context cancellation.
+	err = status.Error(codes.Unavailable, "transport is closing")
+	if !isRetryableConnectionError(ctx, err) {
+		t.Error("expected codes.Unavailable to be retryable regardless of context")
+	}
+}
+
+func TestIsRetryableError(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "nil error",
+			err:  nil,
+			want: false,
+		},
+		{
+			name: "unauthenticated",
+			err:  status.Error(codes.Unauthenticated, "invalid API key"),
+			want: true,
+		},
+		{
+			name: "canceled - connection closing",
+			err:  status.Error(codes.Canceled, "grpc: the client connection is closing"),
+			want: true,
+		},
+		{
+			name: "unavailable",
+			err:  status.Error(codes.Unavailable, "transport is closing"),
+			want: true,
+		},
+		{
+			name: "permission denied serviceerror",
+			err:  serviceerror.NewPermissionDenied("access denied", ""),
+			want: true,
+		},
+		{
+			name: "not found",
+			err:  status.Error(codes.NotFound, "not found"),
+			want: false,
+		},
+		{
+			name: "internal",
+			err:  status.Error(codes.Internal, "server error"),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isRetryableError(ctx, tt.err)
+			if got != tt.want {
+				t.Errorf("isRetryableError() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRetryContext_ConnectionClosingErrorRetries(t *testing.T) {
+	ctx := context.Background()
+	var callCount atomic.Int32
+
+	err := retry.RetryContext(ctx, 30*time.Second, func() *retry.RetryError {
+		n := callCount.Add(1)
+		if n <= 2 {
+			return retryableOrNot(ctx, status.Error(codes.Canceled, "grpc: the client connection is closing"))
+		}
+		return nil
+	})
+
+	if err != nil {
+		t.Fatalf("expected success after retries, got: %v", err)
+	}
+	if got := callCount.Load(); got < 3 {
+		t.Fatalf("expected at least 3 calls, got %d", got)
+	}
+}
+
 func TestRetryContext_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
 	err := retry.RetryContext(ctx, 2*time.Minute, func() *retry.RetryError {
-		return retryableOrNot(status.Error(codes.Unauthenticated, "not yet propagated"))
+		return retryableOrNot(ctx, status.Error(codes.Unauthenticated, "not yet propagated"))
 	})
 
 	if err == nil {

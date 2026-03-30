@@ -76,16 +76,16 @@ func withRetryableClient(ctx context.Context, address, namespace, apiKey string,
 	return retry.RetryContext(ctx, 2*time.Minute, func() *retry.RetryError {
 		tc, clientErr := getTemporalClient(ctx, address, namespace, apiKey)
 		if clientErr != nil {
-			if isRetryableAuthError(clientErr) {
+			if isRetryableError(ctx, clientErr) {
 				return retry.RetryableError(clientErr)
 			}
 			return retry.NonRetryableError(clientErr)
 		}
 		if err := fn(tc); err != nil {
-			if isRetryableAuthError(err) {
+			if isRetryableError(ctx, err) {
 				evictTemporalClient(address, namespace, apiKey)
 			}
-			return retryableOrNot(err)
+			return retryableOrNot(ctx, err)
 		}
 		return nil
 	})

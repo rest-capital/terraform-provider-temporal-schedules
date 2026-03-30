@@ -191,6 +191,44 @@ func TestWithRetryableClient_ClientAcquisitionAuthErrorNotFatal(t *testing.T) {
 	}
 }
 
+// TestWithRetryableClient_EvictsOnConnectionClosing verifies that when fn
+// returns a codes.Canceled error ("the client connection is closing"), the
+// cached client is evicted and the next retry gets a fresh connection. This
+// handles the case where parallel resource operations share a cached client
+// and one goroutine's auth-triggered eviction closes the connection mid-RPC
+// for another goroutine.
+func TestWithRetryableClient_EvictsOnConnectionClosing(t *testing.T) {
+	server := startDevServer(t)
+	address := server.FrontendHostPort()
+	namespace := "default"
+	apiKey := ""
+
+	initialClient, err := getTemporalClient(context.Background(), address, namespace, apiKey)
+	if err != nil {
+		t.Fatalf("getTemporalClient: %v", err)
+	}
+
+	var clientSeenOnSecondCall client.Client
+	var callCount atomic.Int32
+
+	err = withRetryableClient(context.Background(), address, namespace, apiKey,
+		func(tc client.Client) error {
+			n := callCount.Add(1)
+			if n == 1 {
+				return status.Error(codes.Canceled, "grpc: the client connection is closing")
+			}
+			clientSeenOnSecondCall = tc
+			return nil
+		})
+
+	if err != nil {
+		t.Fatalf("expected success, got: %v", err)
+	}
+	if clientSeenOnSecondCall == initialClient {
+		t.Fatal("expected fresh client after eviction, got same instance")
+	}
+}
+
 // TestWithRetryableClient_ServiceErrorPermissionDenied verifies that the retry
 // loop handles *serviceerror.PermissionDenied — the error type the Temporal SDK
 // actually returns for PermissionDenied, as opposed to raw gRPC status errors.
