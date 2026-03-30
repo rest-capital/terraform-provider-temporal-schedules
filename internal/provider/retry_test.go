@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
+	"go.temporal.io/api/serviceerror"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -29,8 +30,18 @@ func TestIsRetryableAuthError(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "permission denied",
+			name: "permission denied raw gRPC",
 			err:  status.Error(codes.PermissionDenied, "access denied"),
+			want: true,
+		},
+		{
+			name: "permission denied serviceerror",
+			err:  serviceerror.NewPermissionDenied("access denied", ""),
+			want: true,
+		},
+		{
+			name: "wrapped permission denied serviceerror",
+			err:  fmt.Errorf("operation failed: %w", serviceerror.NewPermissionDenied("access denied", "")),
 			want: true,
 		},
 		{

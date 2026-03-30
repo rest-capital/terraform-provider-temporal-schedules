@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -187,5 +188,36 @@ func TestWithRetryableClient_ClientAcquisitionAuthErrorNotFatal(t *testing.T) {
 	}
 	if clientsSeen[1] == clientsSeen[2] {
 		t.Error("expected different client on 3rd call after eviction, got same")
+	}
+}
+
+// TestWithRetryableClient_ServiceErrorPermissionDenied verifies that the retry
+// loop handles *serviceerror.PermissionDenied — the error type the Temporal SDK
+// actually returns for PermissionDenied, as opposed to raw gRPC status errors.
+// Before the fix, this error type was not recognized as retryable and the
+// operation would fail immediately on the first attempt.
+func TestWithRetryableClient_ServiceErrorPermissionDenied(t *testing.T) {
+	server := startDevServer(t)
+	address := server.FrontendHostPort()
+	namespace := "default"
+	apiKey := ""
+
+	var callCount atomic.Int32
+
+	err := withRetryableClient(context.Background(), address, namespace, apiKey,
+		func(tc client.Client) error {
+			n := callCount.Add(1)
+			if n <= 2 {
+				// Simulate what the real SDK returns for permission denied.
+				return serviceerror.NewPermissionDenied("caller does not have permission", "")
+			}
+			return nil
+		})
+
+	if err != nil {
+		t.Fatalf("expected success after retries, got: %v", err)
+	}
+	if got := callCount.Load(); got < 3 {
+		t.Fatalf("expected at least 3 calls (2 failures + 1 success), got %d", got)
 	}
 }
