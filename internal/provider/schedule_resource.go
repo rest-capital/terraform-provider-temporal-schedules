@@ -18,7 +18,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
@@ -226,12 +225,6 @@ func (r *scheduleResource) Create(ctx context.Context, req resource.CreateReques
 		return
 	}
 
-	tc, err := getTemporalClient(ctx, plan.Address.ValueString(), plan.Namespace.ValueString(), plan.APIKey.ValueString())
-	if err != nil {
-		resp.Diagnostics.AddError("Failed to create Temporal client", err.Error())
-		return
-	}
-
 	scheduleSpec, diags := buildScheduleSpec(plan.Spec)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
@@ -268,13 +261,11 @@ func (r *scheduleResource) Create(ctx context.Context, req resource.CreateReques
 		}
 	}
 
-	err = retry.RetryContext(ctx, 2*time.Minute, func() *retry.RetryError {
-		_, createErr := tc.ScheduleClient().Create(ctx, opts)
-		if createErr != nil {
-			return retryableOrNot(createErr)
-		}
-		return nil
-	})
+	err := withRetryableClient(ctx, plan.Address.ValueString(), plan.Namespace.ValueString(), plan.APIKey.ValueString(),
+		func(tc client.Client) error {
+			_, createErr := tc.ScheduleClient().Create(ctx, opts)
+			return createErr
+		})
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to create schedule", err.Error())
 		return
@@ -295,22 +286,14 @@ func (r *scheduleResource) Read(ctx context.Context, req resource.ReadRequest, r
 		return
 	}
 
-	tc, err := getTemporalClient(ctx, state.Address.ValueString(), state.Namespace.ValueString(), state.APIKey.ValueString())
-	if err != nil {
-		resp.Diagnostics.AddError("Failed to create Temporal client", err.Error())
-		return
-	}
-
-	handle := tc.ScheduleClient().GetHandle(ctx, state.Name.ValueString())
 	var desc *client.ScheduleDescription
-	err = retry.RetryContext(ctx, 2*time.Minute, func() *retry.RetryError {
-		var descErr error
-		desc, descErr = handle.Describe(ctx)
-		if descErr != nil {
-			return retryableOrNot(descErr)
-		}
-		return nil
-	})
+	err := withRetryableClient(ctx, state.Address.ValueString(), state.Namespace.ValueString(), state.APIKey.ValueString(),
+		func(tc client.Client) error {
+			handle := tc.ScheduleClient().GetHandle(ctx, state.Name.ValueString())
+			var descErr error
+			desc, descErr = handle.Describe(ctx)
+			return descErr
+		})
 	if err != nil {
 		if isNotFoundError(err) {
 			resp.State.RemoveResource(ctx)
@@ -331,12 +314,6 @@ func (r *scheduleResource) Update(ctx context.Context, req resource.UpdateReques
 		return
 	}
 
-	tc, err := getTemporalClient(ctx, plan.Address.ValueString(), plan.Namespace.ValueString(), plan.APIKey.ValueString())
-	if err != nil {
-		resp.Diagnostics.AddError("Failed to create Temporal client", err.Error())
-		return
-	}
-
 	scheduleSpec, diags := buildScheduleSpec(plan.Spec)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
@@ -353,37 +330,35 @@ func (r *scheduleResource) Update(ctx context.Context, req resource.UpdateReques
 
 	var catchupWindow time.Duration
 	if !plan.CatchupWindow.IsNull() && !plan.CatchupWindow.IsUnknown() {
-		catchupWindow, err = parseDuration(plan.CatchupWindow.ValueString())
-		if err != nil {
-			resp.Diagnostics.AddError("Invalid catchup_window", err.Error())
+		var parseErr error
+		catchupWindow, parseErr = parseDuration(plan.CatchupWindow.ValueString())
+		if parseErr != nil {
+			resp.Diagnostics.AddError("Invalid catchup_window", parseErr.Error())
 			return
 		}
 	}
 
-	handle := tc.ScheduleClient().GetHandle(ctx, plan.Name.ValueString())
-	err = retry.RetryContext(ctx, 2*time.Minute, func() *retry.RetryError {
-		updateErr := handle.Update(ctx, client.ScheduleUpdateOptions{
-			DoUpdate: func(_ client.ScheduleUpdateInput) (*client.ScheduleUpdate, error) {
-				return &client.ScheduleUpdate{
-					Schedule: &client.Schedule{
-						Action: action,
-						Spec:   &scheduleSpec,
-						Policy: &client.SchedulePolicies{
-							Overlap:       overlapPolicy,
-							CatchupWindow: catchupWindow,
+	err := withRetryableClient(ctx, plan.Address.ValueString(), plan.Namespace.ValueString(), plan.APIKey.ValueString(),
+		func(tc client.Client) error {
+			handle := tc.ScheduleClient().GetHandle(ctx, plan.Name.ValueString())
+			return handle.Update(ctx, client.ScheduleUpdateOptions{
+				DoUpdate: func(_ client.ScheduleUpdateInput) (*client.ScheduleUpdate, error) {
+					return &client.ScheduleUpdate{
+						Schedule: &client.Schedule{
+							Action: action,
+							Spec:   &scheduleSpec,
+							Policy: &client.SchedulePolicies{
+								Overlap:       overlapPolicy,
+								CatchupWindow: catchupWindow,
+							},
+							State: &client.ScheduleState{
+								Paused: plan.IsPaused.ValueBool(),
+							},
 						},
-						State: &client.ScheduleState{
-							Paused: plan.IsPaused.ValueBool(),
-						},
-					},
-				}, nil
-			},
+					}, nil
+				},
+			})
 		})
-		if updateErr != nil {
-			return retryableOrNot(updateErr)
-		}
-		return nil
-	})
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to update schedule", err.Error())
 		return
@@ -399,20 +374,11 @@ func (r *scheduleResource) Delete(ctx context.Context, req resource.DeleteReques
 		return
 	}
 
-	tc, err := getTemporalClient(ctx, state.Address.ValueString(), state.Namespace.ValueString(), state.APIKey.ValueString())
-	if err != nil {
-		resp.Diagnostics.AddError("Failed to create Temporal client", err.Error())
-		return
-	}
-
-	handle := tc.ScheduleClient().GetHandle(ctx, state.Name.ValueString())
-	err = retry.RetryContext(ctx, 2*time.Minute, func() *retry.RetryError {
-		deleteErr := handle.Delete(ctx)
-		if deleteErr != nil {
-			return retryableOrNot(deleteErr)
-		}
-		return nil
-	})
+	err := withRetryableClient(ctx, state.Address.ValueString(), state.Namespace.ValueString(), state.APIKey.ValueString(),
+		func(tc client.Client) error {
+			handle := tc.ScheduleClient().GetHandle(ctx, state.Name.ValueString())
+			return handle.Delete(ctx)
+		})
 	if err != nil {
 		if isNotFoundError(err) {
 			return

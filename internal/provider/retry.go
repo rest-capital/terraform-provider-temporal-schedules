@@ -8,6 +8,8 @@ import (
 
 // isRetryableAuthError returns true if the error is an authentication/authorization
 // error that may resolve on its own (e.g., API key eventual consistency).
+// gRPC's status.FromError already unwraps errors via errors.As, so this
+// correctly detects auth errors even when wrapped by fmt.Errorf.
 func isRetryableAuthError(err error) bool {
 	if err == nil {
 		return false
