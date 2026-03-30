@@ -51,6 +51,45 @@ func TestEvictTemporalClient_NoopWhenNotCached(t *testing.T) {
 	evictTemporalClient("nonexistent:7233", "ns", "key")
 }
 
+// TestEvictTemporalClient_DoesNotCloseClient verifies that eviction only
+// removes the client from cache without calling Close(). This is critical
+// for parallel Terraform operations: if goroutine A evicts while goroutine B
+// has an in-flight RPC, B's RPC should not get "connection is closing".
+func TestEvictTemporalClient_DoesNotCloseClient(t *testing.T) {
+	server := startDevServer(t)
+	address := server.FrontendHostPort()
+	namespace := "default"
+	apiKey := ""
+
+	c, err := getTemporalClient(context.Background(), address, namespace, apiKey)
+	if err != nil {
+		t.Fatalf("getTemporalClient: %v", err)
+	}
+
+	// Evict the client from cache.
+	evictTemporalClient(address, namespace, apiKey)
+
+	// The client should still be usable (not closed). ScheduleClient().Create()
+	// exercises a real unary gRPC call.
+	_, createErr := c.ScheduleClient().Create(context.Background(), client.ScheduleOptions{
+		ID: "eviction-test-schedule",
+		Spec: client.ScheduleSpec{
+			CronExpressions: []string{"0 0 * * *"},
+		},
+		Action: &client.ScheduleWorkflowAction{
+			Workflow:  "no-op",
+			TaskQueue: "test-queue",
+		},
+	})
+	if createErr != nil {
+		st, ok := status.FromError(createErr)
+		if ok && st.Code() == codes.Canceled {
+			t.Fatalf("evicted client was closed: got %v", createErr)
+		}
+		// Other errors (e.g., workflow validation) are fine — the RPC reached the server.
+	}
+}
+
 // TestWithRetryableClient_EvictsOnAuthError verifies that when fn returns an
 // auth error, the cached client is evicted and the next retry gets a fresh one.
 // This fails if withRetryableClient does not evict on auth errors.
@@ -191,13 +230,10 @@ func TestWithRetryableClient_ClientAcquisitionAuthErrorNotFatal(t *testing.T) {
 	}
 }
 
-// TestWithRetryableClient_EvictsOnConnectionClosing verifies that when fn
-// returns a codes.Canceled error ("the client connection is closing"), the
-// cached client is evicted and the next retry gets a fresh connection. This
-// handles the case where parallel resource operations share a cached client
-// and one goroutine's auth-triggered eviction closes the connection mid-RPC
-// for another goroutine.
-func TestWithRetryableClient_EvictsOnConnectionClosing(t *testing.T) {
+// TestWithRetryableClient_EvictsOnUnavailable verifies that when fn returns a
+// codes.Unavailable error (transport failure), the cached client is evicted
+// and the next retry gets a fresh connection.
+func TestWithRetryableClient_EvictsOnUnavailable(t *testing.T) {
 	server := startDevServer(t)
 	address := server.FrontendHostPort()
 	namespace := "default"
@@ -215,7 +251,7 @@ func TestWithRetryableClient_EvictsOnConnectionClosing(t *testing.T) {
 		func(tc client.Client) error {
 			n := callCount.Add(1)
 			if n == 1 {
-				return status.Error(codes.Canceled, "grpc: the client connection is closing")
+				return status.Error(codes.Unavailable, "transport is closing")
 			}
 			clientSeenOnSecondCall = tc
 			return nil

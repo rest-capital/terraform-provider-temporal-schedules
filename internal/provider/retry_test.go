@@ -76,69 +76,7 @@ func TestIsRetryableAuthError(t *testing.T) {
 	}
 }
 
-func TestRetryableOrNot(t *testing.T) {
-	ctx := context.Background()
-
-	t.Run("auth error is retryable", func(t *testing.T) {
-		err := status.Error(codes.Unauthenticated, "not yet propagated")
-		result := retryableOrNot(ctx, err)
-		if result == nil {
-			t.Fatal("expected non-nil RetryError")
-		}
-		if result.Err == nil {
-			t.Fatal("expected wrapped error")
-		}
-	})
-
-	t.Run("non-auth error is non-retryable", func(t *testing.T) {
-		err := status.Error(codes.NotFound, "not found")
-		result := retryableOrNot(ctx, err)
-		if result == nil {
-			t.Fatal("expected non-nil RetryError")
-		}
-	})
-}
-
-func TestRetryContext_AuthErrorResolves(t *testing.T) {
-	ctx := context.Background()
-	var callCount atomic.Int32
-
-	err := retry.RetryContext(ctx, 30*time.Second, func() *retry.RetryError {
-		n := callCount.Add(1)
-		if n <= 3 {
-			return retryableOrNot(ctx, status.Error(codes.Unauthenticated, "not yet propagated"))
-		}
-		return nil
-	})
-
-	if err != nil {
-		t.Fatalf("expected success after retries, got: %v", err)
-	}
-	if got := callCount.Load(); got < 4 {
-		t.Fatalf("expected at least 4 calls, got %d", got)
-	}
-}
-
-func TestRetryContext_NonAuthErrorFailsImmediately(t *testing.T) {
-	ctx := context.Background()
-	var callCount atomic.Int32
-
-	err := retry.RetryContext(ctx, 30*time.Second, func() *retry.RetryError {
-		callCount.Add(1)
-		return retryableOrNot(ctx, status.Error(codes.NotFound, "schedule not found"))
-	})
-
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if got := callCount.Load(); got != 1 {
-		t.Fatalf("expected exactly 1 call for non-retryable error, got %d", got)
-	}
-}
-
 func TestIsRetryableConnectionError(t *testing.T) {
-	ctx := context.Background()
-
 	tests := []struct {
 		name string
 		err  error
@@ -150,14 +88,19 @@ func TestIsRetryableConnectionError(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "canceled - client connection closing",
-			err:  status.Error(codes.Canceled, "grpc: the client connection is closing"),
+			name: "unavailable - transport closing",
+			err:  status.Error(codes.Unavailable, "transport is closing"),
 			want: true,
 		},
 		{
-			name: "unavailable",
-			err:  status.Error(codes.Unavailable, "transport is closing"),
+			name: "unavailable - connection refused",
+			err:  status.Error(codes.Unavailable, "connection refused"),
 			want: true,
+		},
+		{
+			name: "canceled is not connection error",
+			err:  status.Error(codes.Canceled, "context canceled"),
+			want: false,
 		},
 		{
 			name: "not found is not connection error",
@@ -178,7 +121,7 @@ func TestIsRetryableConnectionError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := isRetryableConnectionError(ctx, tt.err)
+			got := isRetryableConnectionError(tt.err)
 			if got != tt.want {
 				t.Errorf("isRetryableConnectionError() = %v, want %v", got, tt.want)
 			}
@@ -186,28 +129,7 @@ func TestIsRetryableConnectionError(t *testing.T) {
 	}
 }
 
-func TestIsRetryableConnectionError_CanceledContext(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	// codes.Canceled with a cancelled context should NOT be retryable —
-	// the cancellation is intentional (user abort, Terraform timeout).
-	err := status.Error(codes.Canceled, "grpc: the client connection is closing")
-	if isRetryableConnectionError(ctx, err) {
-		t.Error("expected codes.Canceled to be non-retryable when context is done")
-	}
-
-	// codes.Unavailable should still be retryable even with cancelled context,
-	// though in practice the retry loop will exit due to context cancellation.
-	err = status.Error(codes.Unavailable, "transport is closing")
-	if !isRetryableConnectionError(ctx, err) {
-		t.Error("expected codes.Unavailable to be retryable regardless of context")
-	}
-}
-
 func TestIsRetryableError(t *testing.T) {
-	ctx := context.Background()
-
 	tests := []struct {
 		name string
 		err  error
@@ -224,11 +146,6 @@ func TestIsRetryableError(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "canceled - connection closing",
-			err:  status.Error(codes.Canceled, "grpc: the client connection is closing"),
-			want: true,
-		},
-		{
 			name: "unavailable",
 			err:  status.Error(codes.Unavailable, "transport is closing"),
 			want: true,
@@ -237,6 +154,11 @@ func TestIsRetryableError(t *testing.T) {
 			name: "permission denied serviceerror",
 			err:  serviceerror.NewPermissionDenied("access denied", ""),
 			want: true,
+		},
+		{
+			name: "canceled is not retryable",
+			err:  status.Error(codes.Canceled, "context canceled"),
+			want: false,
 		},
 		{
 			name: "not found",
@@ -252,7 +174,7 @@ func TestIsRetryableError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := isRetryableError(ctx, tt.err)
+			got := isRetryableError(tt.err)
 			if got != tt.want {
 				t.Errorf("isRetryableError() = %v, want %v", got, tt.want)
 			}
@@ -260,14 +182,69 @@ func TestIsRetryableError(t *testing.T) {
 	}
 }
 
-func TestRetryContext_ConnectionClosingErrorRetries(t *testing.T) {
-	ctx := context.Background()
+func TestRetryableOrNot(t *testing.T) {
+	t.Run("auth error is retryable", func(t *testing.T) {
+		err := status.Error(codes.Unauthenticated, "not yet propagated")
+		result := retryableOrNot(err)
+		if result == nil {
+			t.Fatal("expected non-nil RetryError")
+		}
+		if result.Err == nil {
+			t.Fatal("expected wrapped error")
+		}
+	})
+
+	t.Run("non-auth error is non-retryable", func(t *testing.T) {
+		err := status.Error(codes.NotFound, "not found")
+		result := retryableOrNot(err)
+		if result == nil {
+			t.Fatal("expected non-nil RetryError")
+		}
+	})
+}
+
+func TestRetryContext_AuthErrorResolves(t *testing.T) {
 	var callCount atomic.Int32
 
-	err := retry.RetryContext(ctx, 30*time.Second, func() *retry.RetryError {
+	err := retry.RetryContext(context.Background(), 30*time.Second, func() *retry.RetryError {
+		n := callCount.Add(1)
+		if n <= 3 {
+			return retryableOrNot(status.Error(codes.Unauthenticated, "not yet propagated"))
+		}
+		return nil
+	})
+
+	if err != nil {
+		t.Fatalf("expected success after retries, got: %v", err)
+	}
+	if got := callCount.Load(); got < 4 {
+		t.Fatalf("expected at least 4 calls, got %d", got)
+	}
+}
+
+func TestRetryContext_NonAuthErrorFailsImmediately(t *testing.T) {
+	var callCount atomic.Int32
+
+	err := retry.RetryContext(context.Background(), 30*time.Second, func() *retry.RetryError {
+		callCount.Add(1)
+		return retryableOrNot(status.Error(codes.NotFound, "schedule not found"))
+	})
+
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if got := callCount.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 call for non-retryable error, got %d", got)
+	}
+}
+
+func TestRetryContext_UnavailableErrorRetries(t *testing.T) {
+	var callCount atomic.Int32
+
+	err := retry.RetryContext(context.Background(), 30*time.Second, func() *retry.RetryError {
 		n := callCount.Add(1)
 		if n <= 2 {
-			return retryableOrNot(ctx, status.Error(codes.Canceled, "grpc: the client connection is closing"))
+			return retryableOrNot(status.Error(codes.Unavailable, "transport is closing"))
 		}
 		return nil
 	})
@@ -277,18 +254,5 @@ func TestRetryContext_ConnectionClosingErrorRetries(t *testing.T) {
 	}
 	if got := callCount.Load(); got < 3 {
 		t.Fatalf("expected at least 3 calls, got %d", got)
-	}
-}
-
-func TestRetryContext_ContextCancellation(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // cancel immediately
-
-	err := retry.RetryContext(ctx, 2*time.Minute, func() *retry.RetryError {
-		return retryableOrNot(ctx, status.Error(codes.Unauthenticated, "not yet propagated"))
-	})
-
-	if err == nil {
-		t.Fatal("expected error from cancelled context")
 	}
 }
