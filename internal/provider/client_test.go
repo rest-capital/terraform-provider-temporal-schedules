@@ -7,20 +7,12 @@ import (
 	"testing"
 
 	"go.temporal.io/sdk/client"
-	"go.temporal.io/sdk/testsuite"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 func TestEvictTemporalClient_RemovesCachedClient(t *testing.T) {
-	server, err := testsuite.StartDevServer(context.Background(), testsuite.DevServerOptions{
-		LogLevel: "error",
-	})
-	if err != nil {
-		t.Fatalf("starting dev server: %v", err)
-	}
-	defer server.Stop()
-
+	server := startDevServer(t)
 	address := server.FrontendHostPort()
 	namespace := "default"
 	apiKey := ""
@@ -62,14 +54,7 @@ func TestEvictTemporalClient_NoopWhenNotCached(t *testing.T) {
 // auth error, the cached client is evicted and the next retry gets a fresh one.
 // This fails if withRetryableClient does not evict on auth errors.
 func TestWithRetryableClient_EvictsOnAuthError(t *testing.T) {
-	server, err := testsuite.StartDevServer(context.Background(), testsuite.DevServerOptions{
-		LogLevel: "error",
-	})
-	if err != nil {
-		t.Fatalf("starting dev server: %v", err)
-	}
-	defer server.Stop()
-
+	server := startDevServer(t)
 	address := server.FrontendHostPort()
 	namespace := "default"
 	apiKey := ""
@@ -109,14 +94,7 @@ func TestWithRetryableClient_EvictsOnAuthError(t *testing.T) {
 // client acquisition rather than failing immediately.
 // This fails if getTemporalClient is called outside the retry loop.
 func TestWithRetryableClient_RetriesClientAcquisition(t *testing.T) {
-	server, err := testsuite.StartDevServer(context.Background(), testsuite.DevServerOptions{
-		LogLevel: "error",
-	})
-	if err != nil {
-		t.Fatalf("starting dev server: %v", err)
-	}
-	defer server.Stop()
-
+	server := startDevServer(t)
 	address := server.FrontendHostPort()
 	namespace := "default"
 	apiKey := ""
@@ -177,24 +155,7 @@ func TestWithRetryableClient_RetriesClientAcquisition(t *testing.T) {
 // retries instead of returning the error immediately.
 // This fails if getTemporalClient is called outside the retry loop.
 func TestWithRetryableClient_ClientAcquisitionAuthErrorNotFatal(t *testing.T) {
-	// Use a unique address that doesn't exist. getTemporalClient will fail,
-	// but the error won't be an auth error — it'll be a connection error.
-	// We can't easily make getTemporalClient return an auth error without
-	// a real server that rejects auth. Instead, we test this indirectly:
-	// override getTemporalClient behavior by pre-populating the cache.
-
-	// For this test, we verify the structural property: withRetryableClient
-	// calls getTemporalClient on each retry iteration, not just once.
-	// We do this by evicting between retries from within fn.
-
-	server, err := testsuite.StartDevServer(context.Background(), testsuite.DevServerOptions{
-		LogLevel: "error",
-	})
-	if err != nil {
-		t.Fatalf("starting dev server: %v", err)
-	}
-	defer server.Stop()
-
+	server := startDevServer(t)
 	address := server.FrontendHostPort()
 	namespace := "default"
 	apiKey := ""
@@ -202,7 +163,7 @@ func TestWithRetryableClient_ClientAcquisitionAuthErrorNotFatal(t *testing.T) {
 	var clientsSeen []client.Client
 	var callCount atomic.Int32
 
-	err = withRetryableClient(context.Background(), address, namespace, apiKey,
+	err := withRetryableClient(context.Background(), address, namespace, apiKey,
 		func(tc client.Client) error {
 			clientsSeen = append(clientsSeen, tc)
 			n := callCount.Add(1)
