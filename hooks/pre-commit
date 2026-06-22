@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if command -v trufflehog >/dev/null 2>&1; then
+  trufflehog git file://. --since-commit HEAD --results=verified,unknown --fail
+else
+  echo "⚠️  trufflehog not installed — skipping secret scan. Install: brew install trufflehog" >&2
+fi

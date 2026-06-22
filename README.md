@@ -185,6 +185,26 @@ make testacc   # acceptance tests (starts an embedded Temporal dev server)
 
 Acceptance tests require no external dependencies. They start a Temporal dev server in-process using the Temporal SDK test suite.
 
+## Secret Scanning
+
+This repository uses [TruffleHog](https://github.com/trufflesecurity/trufflehog) to prevent secrets from being committed.
+
+**CI:** TruffleHog runs automatically on every pull request and push to `main`.
+
+**Pre-commit hook:** A hook script is provided in `hooks/pre-commit`. Enable it once per clone:
+
+```bash
+git config core.hooksPath hooks
+```
+
+The hook requires TruffleHog to be installed:
+
+```bash
+brew install trufflehog
+```
+
+If TruffleHog is not installed, the hook warns and skips — CI remains the hard gate.
+
 ## Releasing
 
 Push a tag to trigger a GitHub Actions workflow that builds and publishes the release with GoReleaser:

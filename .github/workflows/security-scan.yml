@@ -2,12 +2,8 @@ name: Security Scan
 
 on:
   pull_request:
-    paths:
-      - '.github/workflows/**'
   push:
     branches: [main]
-    paths:
-      - '.github/workflows/**'
   workflow_dispatch:
 
 permissions:
@@ -18,9 +14,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      workflows: ${{ steps.filter.outputs.workflows }}
+    steps:
+      # zizmor: ignore[artipacked] -- paths-filter needs git credentials to fetch the base commit on push events
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+        id: filter
+        with:
+          filters: |
+            workflows:
+              - '.github/workflows/**'
+
   zizmor:
     name: Workflow Analysis
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.workflows == 'true'
     continue-on-error: true
     timeout-minutes: 10
     steps:
@@ -35,3 +49,18 @@ jobs:
           annotations: "true"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  trufflehog:
+    name: Secret Scanning
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Run TruffleHog
+        uses: trufflesecurity/trufflehog@30d5bb91af1a771378349dbbb0c82129392acf70 # v3.95.6
+        with:
+          extra_args: --results=verified,unknown
