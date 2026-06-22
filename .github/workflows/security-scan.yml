@@ -24,8 +24,9 @@ jobs:
     outputs:
       workflows: ${{ steps.filter.outputs.workflows }}
     steps:
-      # zizmor: ignore[artipacked] -- paths-filter needs git credentials to fetch the base commit on push events
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
       - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
         id: filter
         with:
