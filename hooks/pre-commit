@@ -2,7 +2,8 @@
 set -euo pipefail
 
 if command -v trufflehog >/dev/null 2>&1; then
-  trufflehog git file://. --since-commit HEAD --results=verified,unknown --fail
+  # Adding --trust-local-git-config until https://github.com/trufflesecurity/trufflehog/issues/4553 is solved
+  trufflehog git file://. --since-commit HEAD --results=verified,unknown --fail --trust-local-git-config
 else
   echo "⚠️  trufflehog not installed — skipping secret scan. Install: brew install trufflehog" >&2
 fi
