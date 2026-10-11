@@ -82,6 +82,7 @@ resource "temporalschedules_schedule" "daily_report" {
 | `is_paused` | Boolean | No | `false` | Whether the schedule is paused. |
 | `catchup_window` | String | No | | Catchup window duration (e.g. `365d`, `1h`). |
 | `memo` | Map of String | No | | Arbitrary key-value metadata attached to the schedule. |
+| `drift_detected` | Boolean | Read-only | | `true` when the schedule was changed outside Terraform since the last apply. See [Drift Detection](docs/resources/schedule.md#drift-detection). |
 
 ### `action` Block (Required)
 
@@ -183,7 +184,7 @@ make test      # unit tests
 make testacc   # acceptance tests (starts an embedded Temporal dev server)
 ```
 
-Acceptance tests require no external dependencies. They start a Temporal dev server in-process using the Temporal SDK test suite.
+Acceptance tests require no external dependencies. They start a Temporal dev server in-process using the Temporal SDK test suite. Set `TEMPORAL_CLI_PATH` to a local `temporal` binary to skip the CLI download.
 
 ## Releasing
 

@@ -1,10 +1,14 @@
 package provider
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -22,6 +26,8 @@ import (
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 )
+
+const fingerprintKey = "fingerprint"
 
 var (
 	_ resource.Resource                = &scheduleResource{}
@@ -47,6 +53,7 @@ type scheduleResourceModel struct {
 	IsPaused      types.Bool              `tfsdk:"is_paused"`
 	CatchupWindow types.String            `tfsdk:"catchup_window"`
 	Memo          map[string]types.String `tfsdk:"memo"`
+	DriftDetected types.Bool              `tfsdk:"drift_detected"`
 }
 
 type actionModel struct {
@@ -134,6 +141,12 @@ func (r *scheduleResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				Optional:    true,
 				ElementType: types.StringType,
 				Description: "Memo key-value pairs.",
+			},
+			// Planned as false, so a true from Read forces an update.
+			"drift_detected": schema.BoolAttribute{
+				Computed:    true,
+				Default:     booldefault.StaticBool(false),
+				Description: "True when the schedule was changed outside Terraform since the last apply. The next apply overwrites it from configuration. Pausing, unpausing and notes are not counted.",
 			},
 		},
 		Blocks: map[string]schema.Block{
@@ -271,6 +284,7 @@ func (r *scheduleResource) Create(ctx context.Context, req resource.CreateReques
 		return
 	}
 
+	resp.Diagnostics.Append(storeFingerprint(ctx, resp.Private, &plan)...)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -304,6 +318,27 @@ func (r *scheduleResource) Read(ctx context.Context, req resource.ReadRequest, r
 	}
 
 	readScheduleIntoState(&state, desc)
+
+	live, err := scheduleFingerprint(desc)
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to fingerprint schedule", err.Error())
+		return
+	}
+	stored, diags := req.Private.GetKey(ctx, fingerprintKey)
+	resp.Diagnostics.Append(diags...)
+	switch {
+	case bytes.Equal(stored, live):
+		state.DriftDetected = types.BoolValue(false)
+	case !sameDeps(stored):
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, fingerprintKey, live)...)
+		state.DriftDetected = types.BoolValue(false)
+	default:
+		state.DriftDetected = types.BoolValue(true)
+		resp.Diagnostics.AddWarning("Schedule changed outside Terraform",
+			fmt.Sprintf("Schedule %q in namespace %q was changed outside Terraform. The next apply will overwrite it with the configuration.",
+				state.Name.ValueString(), state.Namespace.ValueString()))
+	}
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -342,7 +377,13 @@ func (r *scheduleResource) Update(ctx context.Context, req resource.UpdateReques
 		func(tc client.Client) error {
 			handle := tc.ScheduleClient().GetHandle(ctx, plan.Name.ValueString())
 			return handle.Update(ctx, client.ScheduleUpdateOptions{
-				DoUpdate: func(_ client.ScheduleUpdateInput) (*client.ScheduleUpdate, error) {
+				DoUpdate: func(input client.ScheduleUpdateInput) (*client.ScheduleUpdate, error) {
+					// Keep note and limits; only paused is managed.
+					var scheduleState client.ScheduleState
+					if input.Description.Schedule.State != nil {
+						scheduleState = *input.Description.Schedule.State
+					}
+					scheduleState.Paused = plan.IsPaused.ValueBool()
 					return &client.ScheduleUpdate{
 						Schedule: &client.Schedule{
 							Action: action,
@@ -351,9 +392,7 @@ func (r *scheduleResource) Update(ctx context.Context, req resource.UpdateReques
 								Overlap:       overlapPolicy,
 								CatchupWindow: catchupWindow,
 							},
-							State: &client.ScheduleState{
-								Paused: plan.IsPaused.ValueBool(),
-							},
+							State: &scheduleState,
 						},
 					}, nil
 				},
@@ -364,6 +403,7 @@ func (r *scheduleResource) Update(ctx context.Context, req resource.UpdateReques
 		return
 	}
 
+	resp.Diagnostics.Append(storeFingerprint(ctx, resp.Private, &plan)...)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -541,6 +581,66 @@ func readScheduleIntoState(state *scheduleResourceModel, desc *client.ScheduleDe
 	if desc.Schedule.Policy != nil {
 		state.OverlapPolicy = types.StringValue(fromOverlapPolicy(desc.Schedule.Policy.Overlap))
 	}
+}
+
+type fingerprint struct {
+	Deps string `json:"deps"` // SDK conversion is only stable within one library version
+	Hash string `json:"hash"`
+}
+
+var fingerprintDeps = func() string {
+	var deps []string
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, d := range info.Deps {
+			if d.Path == "go.temporal.io/sdk" || d.Path == "go.temporal.io/api" {
+				deps = append(deps, d.Path+"@"+d.Version)
+			}
+		}
+	}
+	return strings.Join(deps, " ")
+}()
+
+// Temporal canonicalises specs, so compare fingerprints only with each other; State is excluded so pause is not drift.
+func scheduleFingerprint(desc *client.ScheduleDescription) ([]byte, error) {
+	managed := desc.Schedule
+	managed.State = nil
+	b, err := json.Marshal(managed)
+	if err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256(b)
+	return json.Marshal(fingerprint{Deps: fingerprintDeps, Hash: hex.EncodeToString(sum[:])})
+}
+
+func sameDeps(stored []byte) bool {
+	var fp fingerprint
+	return json.Unmarshal(stored, &fp) == nil && fp.Deps == fingerprintDeps
+}
+
+type privateStateSetter interface {
+	SetKey(ctx context.Context, key string, value []byte) diag.Diagnostics
+}
+
+func storeFingerprint(ctx context.Context, private privateStateSetter, m *scheduleResourceModel) diag.Diagnostics {
+	var diags diag.Diagnostics
+	var desc *client.ScheduleDescription
+	err := withRetryableClient(ctx, m.Address.ValueString(), m.Namespace.ValueString(), m.APIKey.ValueString(),
+		func(tc client.Client) error {
+			var descErr error
+			desc, descErr = tc.ScheduleClient().GetHandle(ctx, m.Name.ValueString()).Describe(ctx)
+			return descErr
+		})
+	var fp []byte
+	if err == nil {
+		fp, err = scheduleFingerprint(desc)
+	}
+	if err != nil {
+		diags.AddWarning("Failed to fingerprint schedule",
+			fmt.Sprintf("Drift detection for schedule %q restarts from its state at the next refresh: %s", m.Name.ValueString(), err))
+		fp = nil
+	}
+	diags.Append(private.SetKey(ctx, fingerprintKey, fp)...)
+	return diags
 }
 
 func toOverlapPolicy(s string) enumspb.ScheduleOverlapPolicy {

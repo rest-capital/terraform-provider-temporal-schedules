@@ -102,6 +102,10 @@ resource "temporalschedules_schedule" "health_check" {
 - `overlap_policy` (String) Overlap policy: skip, buffer_one, buffer_all, cancel_other, terminate_other, allow_all.
 - `spec` (Block, Optional) Schedule specification. (see [below for nested schema](#nestedblock--spec))
 
+### Read-Only
+
+- `drift_detected` (Boolean) True when the schedule was changed outside Terraform since the last apply. The next apply overwrites it from configuration. Pausing, unpausing and notes are not counted.
+
 <a id="nestedblock--action"></a>
 ### Nested Schema for `action`
 
@@ -167,6 +171,10 @@ Duration attributes (`catchup_window`, `jitter`, `interval.every`, `interval.off
 ### Retry on Authentication Errors
 
 All Temporal API calls (Create, Read, Update, Delete) automatically retry on `Unauthenticated` and `PermissionDenied` gRPC errors with backoff for up to 2 minutes. This handles API key eventual consistency when using Temporal Cloud.
+
+### Drift Detection
+
+After each apply the provider records a fingerprint of the schedule fields this resource manages, as Temporal stores them. If a later refresh finds a different fingerprint, the schedule was changed outside Terraform: Terraform shows a warning, `drift_detected` becomes `true`, and the next apply overwrites the schedule with the configuration. Pausing, unpausing and pause notes are not treated as drift, and an apply keeps the existing pause note. Drift detection rewrites the whole schedule from configuration, so `ignore_changes` on `spec`, `action` or `catchup_window` does not preserve edits made outside Terraform.
 
 ### Externally Deleted Schedules
 
